@@ -1,0 +1,14 @@
+fileFormatVersion: 2
+guid: 1731bb59bbd74a798d8a4a3f0c22bd57
+timeCreated: 1758365848
+licenseType: Store
+TextScriptImporter:
+  externalObjects: {}
+  userData: 
+  assetBundleName: 
+  assetBundleVariant: 
+AssetOrigin:
+  serializedVersion: 1
+  packageName: FailCake.VIS
+  packageVersion: 0.0.1
+  assetPath: Assets/Plugins/FailCake.VIS/package.json

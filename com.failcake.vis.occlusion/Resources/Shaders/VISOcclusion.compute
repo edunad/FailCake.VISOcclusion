@@ -1,0 +1,233 @@
+#pragma kernel CullPortals
+//#pragma enable_d3d11_debug_symbols
+
+#include "Packages/com.unity.render-pipelines.universal/ShaderLibrary/Core.hlsl"
+
+// -----------------------------------------------------------------------
+// STRUCTS & CONSTANTS ----------------------------------
+// -----------------------------------------------------------------------
+struct PortalComputeDataGPU
+{
+    float4x4 localToWorld;
+    float4 data; // x = portalType, y = status, z = unused, w = unused
+};
+
+#define PORTAL_STATUS_PENDING 0.0
+#define PORTAL_STATUS_VISIBLE 1.0
+#define PORTAL_STATUS_CLOSED 2.0
+
+#define PORTAL_TYPE_2D 1
+#define PORTAL_TYPE_3D 2
+
+// -----------------------------------------------------------------------
+// BUFFERS & VARIABLES ----------------------------------
+// -----------------------------------------------------------------------
+RWStructuredBuffer<PortalComputeDataGPU> _PortalDataBuffer;
+TEXTURE2D(_VISDepthTexture);
+// -----------------------------------------------------------------------
+// -----------------------------------------------------------------------
+
+float4 _OcclusionParams; // sample, depth, padding, total
+#define PORTAL_SAMPLES (uint)_OcclusionParams.x
+#define DEPTH_BIAS _OcclusionParams.y
+#define PORTAL_PADDING _OcclusionParams.z
+#define TOTAL_PORTALS (uint)_OcclusionParams.w
+
+// -----------------------------------------------------------------------
+// -----------------------------------------------------------------------
+
+bool IsPointVisible(float2 uv, float portalLinearDepth)
+{
+    if (any(saturate(uv) != uv) || portalLinearDepth <= 0.001)
+        return false;
+
+    float sceneDepthRaw = SAMPLE_TEXTURE2D_LOD(_VISDepthTexture, sampler_PointClamp, uv, 0).r;
+    #if defined(UNITY_REVERSED_Z)
+    if (sceneDepthRaw <= 0.00001) return true;
+    #else
+    if (sceneDepthRaw >= 0.99999) return true;
+    #endif
+
+    float sceneLinearDepth = LinearEyeDepth(sceneDepthRaw, _ZBufferParams);
+    return sceneLinearDepth > portalLinearDepth - DEPTH_BIAS;
+}
+
+// -----------------------------------------------------------------------
+// MAIN KERNEL ----------------------------------
+// -----------------------------------------------------------------------
+
+[numthreads(64, 1, 1)]
+void CullPortals(uint3 id : SV_DispatchThreadID)
+{
+    uint index = id.x;
+    if (index >= TOTAL_PORTALS) return;
+
+    PortalComputeDataGPU portal = _PortalDataBuffer[index];
+    if (portal.data.y != PORTAL_STATUS_PENDING) return;
+
+    // DEFAULT ------------------------------------------
+    portal.data.y = PORTAL_STATUS_CLOSED;
+    // -----------------------------------------------------------------------
+
+    // -----------------------------------------------------------------------
+    // SETUP
+    // -----------------------------------------------------------------------
+
+    float3 corners[8];
+    float depths[4] = {-1.0, -1.0, -1.0, -1.0};
+
+    float2 minBounds = float2(1e10, 1e10);
+    float2 maxBounds = float2(-1e10, -1e10);
+
+    uint planeOutsideMask = 0x3F;
+    bool is3DPortal = portal.data.x == PORTAL_TYPE_3D;
+
+    if (is3DPortal)
+    {
+        corners[0] = mul(portal.localToWorld, float4(-0.5, -0.5, -0.5, 1.0)).xyz;
+        corners[1] = mul(portal.localToWorld, float4(0.5, -0.5, -0.5, 1.0)).xyz;
+        corners[2] = mul(portal.localToWorld, float4(-0.5, 0.5, -0.5, 1.0)).xyz;
+        corners[3] = mul(portal.localToWorld, float4(0.5, 0.5, -0.5, 1.0)).xyz;
+        corners[4] = mul(portal.localToWorld, float4(-0.5, -0.5, 0.5, 1.0)).xyz;
+        corners[5] = mul(portal.localToWorld, float4(0.5, -0.5, 0.5, 1.0)).xyz;
+        corners[6] = mul(portal.localToWorld, float4(-0.5, 0.5, 0.5, 1.0)).xyz;
+        corners[7] = mul(portal.localToWorld, float4(0.5, 0.5, 0.5, 1.0)).xyz;
+    }
+    else
+    {
+        corners[0] = mul(portal.localToWorld, float4(-0.5, -0.5, 0.0, 1.0)).xyz;
+        corners[1] = mul(portal.localToWorld, float4(0.5, -0.5, 0.0, 1.0)).xyz;
+        corners[2] = mul(portal.localToWorld, float4(-0.5, 0.5, 0.0, 1.0)).xyz;
+        corners[3] = mul(portal.localToWorld, float4(0.5, 0.5, 0.0, 1.0)).xyz;
+    }
+
+    uint numCorners = is3DPortal ? 8 : 4;
+
+    UNITY_LOOP
+    for (uint c = 0; c < numCorners; ++c)
+    {
+        float3 worldPos = corners[c];
+
+        UNITY_UNROLLX(6)
+        for (uint plane = 0; plane < 6; ++plane)
+        {
+            float dist = dot(unity_CameraWorldClipPlanes[plane].xyz, worldPos) + unity_CameraWorldClipPlanes[plane].w;
+            if (dist >= 0.0) planeOutsideMask &= ~(1u << plane);
+        }
+
+        if (!is3DPortal && c < 4)
+        {
+            float4 clipPos = mul(UNITY_MATRIX_VP, float4(worldPos, 1.0));
+
+            if (clipPos.w > 0.001)
+            {
+                float2 screenUV = clipPos.xy / clipPos.w * 0.5 + 0.5;
+                #if UNITY_UV_STARTS_AT_TOP
+                screenUV.y = 1.0 - screenUV.y;
+                #endif
+
+                minBounds = min(minBounds, screenUV);
+                maxBounds = max(maxBounds, screenUV);
+
+                depths[c] = clipPos.w;
+            }
+        }
+    }
+
+    if (planeOutsideMask != 0)
+    {
+        _PortalDataBuffer[index] = portal;
+        return;
+    }
+
+    if (is3DPortal)
+    {
+        portal.data.y = PORTAL_STATUS_VISIBLE;
+        _PortalDataBuffer[index] = portal;
+        return;
+    }
+
+    // --- QUICK TESTS (2D ONLY, 3D DOES NOT NEED TO BE PRECISE)  ---
+    // -----------------------------------------------------------------------
+    float2 padding = PORTAL_PADDING * (maxBounds - minBounds);
+    minBounds = saturate(minBounds - padding);
+    maxBounds = saturate(maxBounds + padding);
+
+    float2 screenSize = maxBounds - minBounds;
+
+    if (IsPointVisible((minBounds + maxBounds) * 0.5, (depths[0] + depths[1] + depths[2] + depths[3]) * 0.25))
+    {
+        portal.data.y = PORTAL_STATUS_VISIBLE;
+        _PortalDataBuffer[index] = portal;
+        return;
+    }
+
+    if (IsPointVisible(minBounds, depths[0]) ||
+        IsPointVisible(float2(maxBounds.x, minBounds.y), depths[1]) ||
+        IsPointVisible(maxBounds, depths[2]) ||
+        IsPointVisible(float2(minBounds.x, maxBounds.y), depths[3]))
+    {
+        portal.data.y = PORTAL_STATUS_VISIBLE;
+        _PortalDataBuffer[index] = portal;
+        return;
+    }
+
+    float2 centerUV = (minBounds + maxBounds) * 0.5;
+    if (IsPointVisible(float2(centerUV.x, minBounds.y), (depths[0] + depths[1]) * 0.5) ||
+        IsPointVisible(float2(maxBounds.x, centerUV.y), (depths[1] + depths[2]) * 0.5) ||
+        IsPointVisible(float2(centerUV.x, maxBounds.y), (depths[2] + depths[3]) * 0.5) ||
+        IsPointVisible(float2(minBounds.x, centerUV.y), (depths[3] + depths[0]) * 0.5))
+    {
+        portal.data.y = PORTAL_STATUS_VISIBLE;
+        _PortalDataBuffer[index] = portal;
+        return;
+    }
+
+    // -----------------------------------------------------------------------
+    // --- GRID TESTS  ---
+
+    uint gridSize = (uint)ceil(sqrt((float)PORTAL_SAMPLES));
+    float2 invGrid = 1.0 / float2(gridSize, gridSize);
+
+    uint seed = index * 2654435761u + asuint(_Time.y);
+    for (uint idx = 0; idx < PORTAL_SAMPLES; ++idx)
+    {
+        uint hash = seed + idx * 2654435761u;
+        float2 jitter = float2(
+            frac(sin(dot(float2(hash, idx), float2(12.9898, 78.233))) * 43758.5453),
+            frac(sin(dot(float2(idx, hash), float2(93.9898, 67.345))) * 43758.5453)
+        );
+
+        float2 gridPos = saturate(float2(idx % gridSize, idx / gridSize) * invGrid + jitter * invGrid * 0.8);
+        float2 sampleUV = minBounds + gridPos * screenSize;
+
+        float sampleDepth = lerp(
+            lerp(depths[0], depths[1], gridPos.x),
+            lerp(depths[3], depths[2], gridPos.x),
+            gridPos.y
+        );
+
+        if (IsPointVisible(sampleUV, sampleDepth))
+        {
+            portal.data.y = PORTAL_STATUS_VISIBLE;
+            _PortalDataBuffer[index] = portal;
+            return;
+        }
+    }
+    // -----------------------------------------------------------------------
+    _PortalDataBuffer[index] = portal;
+}
+
+/*# MIT License Copyright (c) 2025 FailCake
+
+# Permission is hereby granted, free of charge, to any person obtaining a copy of this software and associated documentation files (the
+# "Software"), to deal in the Software without restriction, including without limitation the rights to use, copy, modify, merge, publish,
+# distribute, sublicense, and/or sell copies of the Software, and to permit persons to whom the Software is furnished to do so, subject to
+# the following conditions:
+#
+# The above copyright notice and this permission notice shall be included in all copies or substantial portions of the Software.
+#
+# THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF
+# MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR
+# ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE
+# SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.*/

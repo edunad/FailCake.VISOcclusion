@@ -1,0 +1,21 @@
+﻿{
+  "name": "com.failcake.vis.occlusion",
+  "displayName": "VISOcclusion",
+  "version": "0.0.1",
+  "unity": "6000.0",
+  "description": "Simple visualization occlusion system. Using portals",
+  "type": "library",
+  "keywords": [
+    "3d",
+    "VIS",
+    "quake",
+    "occlusion",
+    "portals"
+  ],
+  "author": {
+    "name": "FailCake",
+    "url": "https://github.com/edunad/FailCake.VISOcclusion"
+  },
+  "dependencies": {
+  }
+}
