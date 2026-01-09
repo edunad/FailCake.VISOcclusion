@@ -38,7 +38,12 @@ namespace FailCake.VIS
             if (!VISController.Instance || renderingData.cameraData.renderType != CameraRenderType.Base) return;
 
             if (renderingData.cameraData.cameraType == CameraType.SceneView) return;
-            if (renderingData.cameraData.camera != Camera.main) return;
+
+            Camera currentCamera = renderingData.cameraData.camera;
+            bool isMainCamera = currentCamera == Camera.main;
+            bool isAdditionalCamera = VISController.Instance.AdditionalCameras.Contains(currentCamera);
+
+            if (!isMainCamera && !isAdditionalCamera) return;
 
             renderingData.cameraData.camera.depthTextureMode |= DepthTextureMode.Depth;
             renderer.EnqueuePass(this._visRenderPass);
@@ -75,7 +80,10 @@ namespace FailCake.VIS
             public override void RecordRenderGraph(RenderGraph renderGraph, ContextContainer frameData) {
                 if (!this._computeShader || !VISController.Instance) return;
 
-                ComputeBuffer portalBuffer = VISController.Instance.GetPortalBuffer();
+                UniversalCameraData cameraData = frameData.Get<UniversalCameraData>();
+                if (cameraData == null || cameraData.camera == null) return;
+
+                ComputeBuffer portalBuffer = VISController.Instance.GetPortalBufferForCamera(cameraData.camera);
                 if (portalBuffer == null || !portalBuffer.IsValid() || portalBuffer.count == 0) return;
 
                 IReadOnlyList<entity_vis_portal> portals = VISController.Instance.GetPortals();

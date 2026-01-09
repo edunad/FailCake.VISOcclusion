@@ -51,6 +51,8 @@ namespace FailCake.VIS
         [Range(0, 100)]
         public float MaxDistance = 15;
 
+        public List<Camera> AdditionalCameras = new List<Camera>();
+
         [Header("Debug")]
         public bool DebugMode;
 
@@ -61,8 +63,8 @@ namespace FailCake.VIS
 
         private readonly Dictionary<entity_vis_room, float> _roomInvisibilityTimers = new Dictionary<entity_vis_room, float>();
 
-        private ComputeBuffer _portalDataBuffer;
-        private PortalComputeDataGPU[] _cachedPortalArray;
+        private readonly Dictionary<Camera, ComputeBuffer> _cameraPortalBuffers = new Dictionary<Camera, ComputeBuffer>();
+        private readonly Dictionary<Camera, HashSet<int>> _cameraVisiblePortals = new Dictionary<Camera, HashSet<int>>();
 
         #endregion
 
@@ -82,13 +84,46 @@ namespace FailCake.VIS
         }
 
         private void OnBeginCameraRendering(ScriptableRenderContext context, Camera cam) {
-            if (!Camera.main || cam != Camera.main) return;
-            this.UpdateBuffers();
+            if (!Camera.main || !cam || !cam.isActiveAndEnabled) return;
+
+            bool isMainCamera = cam == Camera.main;
+            bool isAdditionalCamera = this.AdditionalCameras.Contains(cam);
+
+            switch (isMainCamera)
+            {
+                case false when !isAdditionalCamera:
+                    return;
+                case true:
+                {
+                    foreach (entity_vis_portal portal in this._portals)
+                    {
+                        if (!portal) continue;
+                        portal.SetStatus(portal.IsOpen() ? PortalStatus.PENDING : PortalStatus.CLOSED);
+                    }
+
+                    break;
+                }
+            }
+
+            if (!this._cameraVisiblePortals.TryGetValue(cam, out HashSet<int> visiblePortal))
+                this._cameraVisiblePortals[cam] = new HashSet<int>();
+            else
+                visiblePortal.Clear();
+
+            this.UpdateBuffers(cam);
         }
 
         private void OnEndCameraRendering(ScriptableRenderContext context, Camera cam) {
-            if (!Camera.main || this._portalDataBuffer == null) return;
-            AsyncGPUReadback.Request(this._portalDataBuffer, this.OnCullingDataReady);
+            if (!Camera.main || !cam || !cam.isActiveAndEnabled) return;
+
+            bool isMainCamera = cam == Camera.main;
+            bool isAdditionalCamera = this.AdditionalCameras.Contains(cam);
+
+            if (!isMainCamera && !isAdditionalCamera) return;
+
+            if (!this._cameraPortalBuffers.TryGetValue(cam, out ComputeBuffer buffer) || buffer == null) return;
+
+            AsyncGPUReadback.Request(buffer, request => this.OnCullingDataReady(request, cam));
         }
 
         public void OnDestroy() {
@@ -136,8 +171,8 @@ namespace FailCake.VIS
 
         #endregion
 
-        public ComputeBuffer GetPortalBuffer() {
-            return this._portalDataBuffer;
+        public ComputeBuffer GetPortalBufferForCamera(Camera cam) {
+            return this._cameraPortalBuffers.GetValueOrDefault(cam);
         }
 
         public IReadOnlyList<entity_vis_portal> GetPortals() {
@@ -150,17 +185,28 @@ namespace FailCake.VIS
 
         private void ReInitBuffers() {
             this.ReleaseBuffers();
-
-            if (this._portals.Count == 0) return;
-            this._portalDataBuffer = new ComputeBuffer(this._portals.Count, Marshal.SizeOf<PortalComputeDataGPU>(), ComputeBufferType.Structured, ComputeBufferMode.Immutable);
         }
 
-        private void UpdateBuffers() {
-            if (!Camera.main || this._portalDataBuffer == null || !this._portalDataBuffer.IsValid()) return;
+        private ComputeBuffer GetOrCreateCameraBuffer(Camera cam) {
+            if (this._cameraPortalBuffers.TryGetValue(cam, out ComputeBuffer existingBuffer) && existingBuffer != null && existingBuffer.IsValid()) return existingBuffer;
 
-            if (this._cachedPortalArray == null || this._cachedPortalArray.Length != this._portals.Count) this._cachedPortalArray = new PortalComputeDataGPU[this._portals.Count];
+            if (this._portals.Count == 0) return null;
 
-            Transform cameraTransform = Camera.main.transform;
+            ComputeBuffer newBuffer = new ComputeBuffer(this._portals.Count, Marshal.SizeOf<PortalComputeDataGPU>(), ComputeBufferType.Structured, ComputeBufferMode.Immutable);
+            this._cameraPortalBuffers[cam] = newBuffer;
+
+            return newBuffer;
+        }
+
+        private void UpdateBuffers(Camera cam) {
+            if (!cam) return;
+
+            ComputeBuffer cameraBuffer = this.GetOrCreateCameraBuffer(cam);
+            if (cameraBuffer == null || !cameraBuffer.IsValid()) return;
+
+            PortalComputeDataGPU[] cameraPortalArray = new PortalComputeDataGPU[this._portals.Count];
+
+            Transform cameraTransform = cam.transform;
             Vector3 cameraPosition = cameraTransform.position;
             float maxDistanceSquared = this.MaxDistance * this.MaxDistance;
 
@@ -169,7 +215,7 @@ namespace FailCake.VIS
                 entity_vis_portal portal = this._portals[i];
                 if (!portal)
                 {
-                    this._cachedPortalArray[i] = new PortalComputeDataGPU {
+                    cameraPortalArray[i] = new PortalComputeDataGPU {
                         localToWorld = Matrix4x4.identity,
                         data = new Vector4((uint)PortalType.UNKNOWN, (uint)PortalStatus.CLOSED, 0, 0)
                     };
@@ -184,7 +230,6 @@ namespace FailCake.VIS
                     ? PortalStatus.PENDING
                     : PortalStatus.CLOSED;
 
-                // PORTAL BOUNDS -----
                 if (portalStatus == PortalStatus.PENDING)
                 {
                     float3 portalToCamera = cameraPosition - portalPos;
@@ -196,9 +241,8 @@ namespace FailCake.VIS
 
                     if (withinX && withinY && withinZ) portalStatus = PortalStatus.VISIBLE;
                 }
-                // ----------------
 
-                this._cachedPortalArray[i] = new PortalComputeDataGPU {
+                cameraPortalArray[i] = new PortalComputeDataGPU {
                     localToWorld = Matrix4x4.TRS(
                         portal.transform.position,
                         portal.transform.rotation,
@@ -208,34 +252,40 @@ namespace FailCake.VIS
                 };
             }
 
-            this._portalDataBuffer.SetData(this._cachedPortalArray);
+            cameraBuffer.SetData(cameraPortalArray);
         }
 
         private void ReleaseBuffers() {
-            this._portalDataBuffer?.Release();
-            this._portalDataBuffer = null;
+            foreach (ComputeBuffer buffer in this._cameraPortalBuffers.Values) buffer?.Release();
+
+            this._cameraPortalBuffers.Clear();
+            this._cameraVisiblePortals.Clear();
         }
 
         #endregion
 
-        private List<entity_vis_room> FindCurrentRoom() {
-            if (!Camera.main) return null;
-            Vector3 cameraPosition = Camera.main.transform.position;
+        private List<entity_vis_room> FindCurrentRoom(Camera cam) {
+            if (!cam) return null;
+            Vector3 cameraPosition = cam.transform.position;
 
             List<entity_vis_room> containingRooms = new List<entity_vis_room>();
             foreach (entity_vis_room room in this._rooms)
-                if (room && room.IsInside?.Invoke(cameraPosition) == true)
-                    containingRooms.Add(room);
+            {
+                if (!room) continue;
+                if (room.IsInside?.Invoke(cameraPosition) == true) containingRooms.Add(room);
+            }
 
             return containingRooms;
         }
 
-        private void OnCullingDataReady(AsyncGPUReadbackRequest request) {
-            if (!request.done || request.hasError || !Camera.main) return;
+        private void OnCullingDataReady(AsyncGPUReadbackRequest request, Camera cam) {
+            if (!request.done || request.hasError || !cam) return;
             float currentTime = Time.time;
 
+            bool isMainCamera = cam == Camera.main;
+
             // Mark inside rooms -------
-            List<entity_vis_room> currentRooms = this.FindCurrentRoom();
+            List<entity_vis_room> currentRooms = this.FindCurrentRoom(cam);
             foreach (entity_vis_room room in currentRooms) this._roomInvisibilityTimers[room] = currentTime + this.OcclusionDelay;
             // ------------
 
@@ -249,9 +299,11 @@ namespace FailCake.VIS
                 if (!portal) continue;
 
                 PortalStatus status = i >= portalDataArray.Length ? PortalStatus.CLOSED : (PortalStatus)portalDataArray[i].data.y;
-                portal.SetStatus(status);
 
+                if (isMainCamera) portal.SetStatus(status);
                 if (status != PortalStatus.VISIBLE) continue;
+
+                if (this._cameraVisiblePortals.TryGetValue(cam, out HashSet<int> visibleSet)) visibleSet.Add(i);
 
                 switch (portal)
                 {
@@ -275,13 +327,14 @@ namespace FailCake.VIS
             }
             // ------------------------
 
-            // UPDATE ALL ROOMS --------------
-            foreach (entity_vis_room room in this._rooms)
-            {
-                if (!room) continue;
-                float timerValue = this._roomInvisibilityTimers.GetValueOrDefault(room, 0);
-                room.OnVisibilityChanged?.Invoke(currentTime <= timerValue);
-            }
+            // UPDATE ALL ROOMS  --------------
+            if (isMainCamera)
+                foreach (entity_vis_room room in this._rooms)
+                {
+                    if (!room) continue;
+                    float timerValue = this._roomInvisibilityTimers.GetValueOrDefault(room, 0);
+                    room.OnVisibilityChanged?.Invoke(currentTime <= timerValue);
+                }
             // ------------------------
         }
 
@@ -290,30 +343,83 @@ namespace FailCake.VIS
 
         public void OnDrawGizmos() {
             if (!Application.isPlaying || !Camera.main || !this.DebugMode) return;
-            if (this._portalDataBuffer?.IsValid() != true) return;
 
-            Vector3 cameraPos = Camera.main.transform.position;
-            this.DrawCameraFrustum(Camera.main);
-
-            foreach (entity_vis_portal portal in this._portals)
+            // Main camera ----
+            if (Camera.main && Camera.main.isActiveAndEnabled)
             {
-                if (!portal || portal.GetPortalStatus() != PortalStatus.VISIBLE) continue;
-                this.DrawFrustumThroughPortal(portal, cameraPos);
+                Vector3 cameraPos = Camera.main.transform.position;
+                Gizmos.color = Color.yellow;
+                Handles.color = new Color(1f, 1f, 0f, 0.05f);
+                this.DrawCameraFrustum(Camera.main);
+
+                if (this._cameraVisiblePortals.TryGetValue(Camera.main, out HashSet<int> mainCamPortals))
+                    for (int i = 0; i < this._portals.Count; i++)
+                    {
+                        if (!mainCamPortals.Contains(i)) continue;
+                        entity_vis_portal portal = this._portals[i];
+                        if (!portal) continue;
+
+                        Gizmos.color = Color.cyan;
+                        Handles.color = new Color(0f, 1f, 1f, 0.1f);
+                        this.DrawFrustumThroughPortal(portal, cameraPos);
+                    }
             }
+            // ----------------
+
+            // Additional cameras ----
+            for (int i = 0; i < this.AdditionalCameras.Count; i++)
+            {
+                Camera additionalCam = this.AdditionalCameras[i];
+                if (!additionalCam || !additionalCam.isActiveAndEnabled) continue;
+
+                Vector3 cameraPos = additionalCam.transform.position;
+                Color cameraColor = this.GetDebugColorForCameraIndex(i);
+
+                Gizmos.color = cameraColor;
+                Handles.color = new Color(cameraColor.r, cameraColor.g, cameraColor.b, 0.05f);
+
+                this.DrawCameraFrustum(additionalCam);
+                if (!this._cameraVisiblePortals.TryGetValue(additionalCam, out HashSet<int> camPortals)) continue;
+
+                for (int portalIdx = 0; portalIdx < this._portals.Count; portalIdx++)
+                {
+                    if (!camPortals.Contains(portalIdx)) continue;
+                    entity_vis_portal portal = this._portals[portalIdx];
+                    if (!portal) continue;
+
+                    Color portalColor = new Color(cameraColor.r * 0.8f, cameraColor.g * 0.8f, cameraColor.b * 1f, 1f);
+
+                    Gizmos.color = portalColor;
+                    Handles.color = new Color(portalColor.r, portalColor.g, portalColor.b, 0.1f);
+
+                    this.DrawFrustumThroughPortal(portal, cameraPos);
+                }
+            }
+            // -------------------------
+        }
+
+        private Color GetDebugColorForCameraIndex(int index) {
+            Color[] colors = {
+                new Color(1f, 0.5f, 0f),
+                new Color(0.5f, 0f, 1f),
+                new Color(0f, 1f, 0.5f),
+                new Color(1f, 0f, 0.5f),
+                new Color(0.5f, 1f, 0f)
+            };
+
+            return colors[index % colors.Length];
         }
 
         private void DrawCameraFrustum(Camera cam) {
             float nearClip = cam.nearClipPlane;
             float farClip = Mathf.Min(cam.farClipPlane, this.MaxDistance);
 
-            // Calculate frustum corners
             Vector3[] nearCorners = new Vector3[4];
             Vector3[] farCorners = new Vector3[4];
 
             cam.CalculateFrustumCorners(new Rect(0, 0, 1, 1), nearClip, Camera.MonoOrStereoscopicEye.Mono, nearCorners);
             cam.CalculateFrustumCorners(new Rect(0, 0, 1, 1), farClip, Camera.MonoOrStereoscopicEye.Mono, farCorners);
 
-            // Transform to world space
             Transform camTransform = cam.transform;
             for (int i = 0; i < 4; i++)
             {
@@ -321,11 +427,6 @@ namespace FailCake.VIS
                 farCorners[i] = camTransform.TransformPoint(farCorners[i]);
             }
 
-            // Draw frustum
-            Gizmos.color = Color.yellow;
-            Handles.color = new Color(1f, 1f, 0f, 0.05f);
-
-            // Draw near and far planes
             for (int i = 0; i < 4; i++)
             {
                 int next = (i + 1) % 4;
@@ -334,11 +435,10 @@ namespace FailCake.VIS
                 Gizmos.DrawLine(nearCorners[i], farCorners[i]);
             }
 
-            // Draw filled frustum faces
-            Handles.DrawAAConvexPolygon(nearCorners[0], nearCorners[1], farCorners[1], farCorners[0]); // Bottom
-            Handles.DrawAAConvexPolygon(nearCorners[2], nearCorners[3], farCorners[3], farCorners[2]); // Top
-            Handles.DrawAAConvexPolygon(nearCorners[0], nearCorners[3], farCorners[3], farCorners[0]); // Left
-            Handles.DrawAAConvexPolygon(nearCorners[1], nearCorners[2], farCorners[2], farCorners[1]); // Right
+            Handles.DrawAAConvexPolygon(nearCorners[0], nearCorners[1], farCorners[1], farCorners[0]);
+            Handles.DrawAAConvexPolygon(nearCorners[2], nearCorners[3], farCorners[3], farCorners[2]);
+            Handles.DrawAAConvexPolygon(nearCorners[0], nearCorners[3], farCorners[3], farCorners[0]);
+            Handles.DrawAAConvexPolygon(nearCorners[1], nearCorners[2], farCorners[2], farCorners[1]);
         }
 
         private void DrawFrustumThroughPortal(entity_vis_portal portal, Vector3 cameraPos) {
@@ -366,13 +466,11 @@ namespace FailCake.VIS
                 float halfHeight = cubePortal.size.y * 0.5f;
                 float halfDepth = cubePortal.size.z * 0.5f;
 
-                portalCorners = new Vector3[8] {
-                    // Front face (z = -halfDepth)
+                portalCorners = new[] {
                     portalPos + -portalRight * halfWidth + -portalUp * halfHeight + -portalForward * halfDepth,
                     portalPos + portalRight * halfWidth + -portalUp * halfHeight + -portalForward * halfDepth,
                     portalPos + portalRight * halfWidth + portalUp * halfHeight + -portalForward * halfDepth,
                     portalPos + -portalRight * halfWidth + portalUp * halfHeight + -portalForward * halfDepth,
-                    // Back face (z = +halfDepth)
                     portalPos + -portalRight * halfWidth + -portalUp * halfHeight + portalForward * halfDepth,
                     portalPos + portalRight * halfWidth + -portalUp * halfHeight + portalForward * halfDepth,
                     portalPos + portalRight * halfWidth + portalUp * halfHeight + portalForward * halfDepth,
@@ -394,9 +492,6 @@ namespace FailCake.VIS
             // ----------------
 
             // RENDERING ------
-            Gizmos.color = Color.cyan;
-            Handles.color = new Color(0f, 1f, 1f, 0.1f);
-
             if (portalCorners.Length == 4)
                 for (int i = 0; i < 4; i++)
                 {
@@ -409,7 +504,6 @@ namespace FailCake.VIS
                 }
             else if (portalCorners.Length == 8)
             {
-                Handles.color = new Color(0f, 1f, 0f, 0.05f);
                 for (int i = 0; i < 8; i++) Gizmos.DrawLine(portalCorners[i], farCorners[i]);
 
                 // FRONT
