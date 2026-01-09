@@ -1,7 +1,7 @@
 ﻿{
   "name": "com.failcake.vis.occlusion",
   "displayName": "VISOcclusion",
-  "version": "0.0.1",
+  "version": "0.0.2",
   "unity": "6000.0",
   "description": "Simple visualization occlusion system. Using portals",
   "type": "library",

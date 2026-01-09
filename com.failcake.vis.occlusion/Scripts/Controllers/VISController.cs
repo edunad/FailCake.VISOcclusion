@@ -344,58 +344,43 @@ namespace FailCake.VIS
         public void OnDrawGizmos() {
             if (!Application.isPlaying || !Camera.main || !this.DebugMode) return;
 
-            // Main camera ----
-            if (Camera.main && Camera.main.isActiveAndEnabled)
+            for (int camIdx = -1; camIdx < this.AdditionalCameras.Count; camIdx++)
             {
-                Vector3 cameraPos = Camera.main.transform.position;
-                Gizmos.color = Color.yellow;
-                Handles.color = new Color(1f, 1f, 0f, 0.05f);
-                this.DrawCameraFrustum(Camera.main);
+                Camera cam = camIdx == -1 ? Camera.main : this.AdditionalCameras[camIdx];
+                if (!cam || !cam.isActiveAndEnabled) continue;
 
-                if (this._cameraVisiblePortals.TryGetValue(Camera.main, out HashSet<int> mainCamPortals))
-                    for (int i = 0; i < this._portals.Count; i++)
-                    {
-                        if (!mainCamPortals.Contains(i)) continue;
-                        entity_vis_portal portal = this._portals[i];
-                        if (!portal) continue;
+                bool isMainCamera = camIdx == -1;
+                Vector3 cameraPos = cam.transform.position;
 
-                        Gizmos.color = Color.cyan;
-                        Handles.color = new Color(0f, 1f, 1f, 0.1f);
-                        this.DrawFrustumThroughPortal(portal, cameraPos);
-                    }
-            }
-            // ----------------
-
-            // Additional cameras ----
-            for (int i = 0; i < this.AdditionalCameras.Count; i++)
-            {
-                Camera additionalCam = this.AdditionalCameras[i];
-                if (!additionalCam || !additionalCam.isActiveAndEnabled) continue;
-
-                Vector3 cameraPos = additionalCam.transform.position;
-                Color cameraColor = this.GetDebugColorForCameraIndex(i);
+                // FRUSTUM ----
+                Color cameraColor = isMainCamera ? Color.yellow : this.GetDebugColorForCameraIndex(camIdx);
 
                 Gizmos.color = cameraColor;
                 Handles.color = new Color(cameraColor.r, cameraColor.g, cameraColor.b, 0.05f);
 
-                this.DrawCameraFrustum(additionalCam);
-                if (!this._cameraVisiblePortals.TryGetValue(additionalCam, out HashSet<int> camPortals)) continue;
+                this.DrawCameraFrustum(cam);
+                // --------------------
+
+                // PORTALS -----
+                if (!this._cameraVisiblePortals.TryGetValue(cam, out HashSet<int> visiblePortals)) continue;
+
+                Color portalColor = isMainCamera
+                    ? Color.cyan
+                    : new Color(cameraColor.r * 0.8f, cameraColor.g * 0.8f, cameraColor.b * 1f, 1f);
 
                 for (int portalIdx = 0; portalIdx < this._portals.Count; portalIdx++)
                 {
-                    if (!camPortals.Contains(portalIdx)) continue;
+                    if (!visiblePortals.Contains(portalIdx)) continue;
+
                     entity_vis_portal portal = this._portals[portalIdx];
                     if (!portal) continue;
 
-                    Color portalColor = new Color(cameraColor.r * 0.8f, cameraColor.g * 0.8f, cameraColor.b * 1f, 1f);
-
                     Gizmos.color = portalColor;
                     Handles.color = new Color(portalColor.r, portalColor.g, portalColor.b, 0.1f);
-
                     this.DrawFrustumThroughPortal(portal, cameraPos);
                 }
+                // ----------------------------------
             }
-            // -------------------------
         }
 
         private Color GetDebugColorForCameraIndex(int index) {

@@ -95,10 +95,10 @@ void CullPortals(uint3 id : SV_DispatchThreadID)
     }
     else
     {
-        corners[0] = mul(portal.localToWorld, float4(-0.5, -0.5, 0.0, 1.0)).xyz;
-        corners[1] = mul(portal.localToWorld, float4(0.5, -0.5, 0.0, 1.0)).xyz;
-        corners[2] = mul(portal.localToWorld, float4(-0.5, 0.5, 0.0, 1.0)).xyz;
-        corners[3] = mul(portal.localToWorld, float4(0.5, 0.5, 0.0, 1.0)).xyz;
+        corners[0] = mul(portal.localToWorld, float4(-0.5, -0.5, 0.0, 1.0)).xyz; // BL
+        corners[1] = mul(portal.localToWorld, float4(0.5, -0.5, 0.0, 1.0)).xyz; // BR
+        corners[2] = mul(portal.localToWorld, float4(-0.5, 0.5, 0.0, 1.0)).xyz; // TL
+        corners[3] = mul(portal.localToWorld, float4(0.5, 0.5, 0.0, 1.0)).xyz; // TR
     }
 
     uint numCorners = is3DPortal ? 8 : 4;
@@ -147,7 +147,7 @@ void CullPortals(uint3 id : SV_DispatchThreadID)
         return;
     }
 
-    // --- QUICK TESTS (2D ONLY, 3D DOES NOT NEED TO BE PRECISE)  ---
+    // --- QUICK TESTS (2D ONLY)  ---
     // -----------------------------------------------------------------------
     float2 padding = PORTAL_PADDING * (maxBounds - minBounds);
     minBounds = saturate(minBounds - padding);
@@ -162,10 +162,11 @@ void CullPortals(uint3 id : SV_DispatchThreadID)
         return;
     }
 
+
     if (IsPointVisible(minBounds, depths[0]) ||
         IsPointVisible(float2(maxBounds.x, minBounds.y), depths[1]) ||
-        IsPointVisible(maxBounds, depths[2]) ||
-        IsPointVisible(float2(minBounds.x, maxBounds.y), depths[3]))
+        IsPointVisible(float2(minBounds.x, maxBounds.y), depths[2]) ||
+        IsPointVisible(maxBounds, depths[3]))
     {
         portal.data.y = PORTAL_STATUS_VISIBLE;
         _PortalDataBuffer[index] = portal;
@@ -174,9 +175,9 @@ void CullPortals(uint3 id : SV_DispatchThreadID)
 
     float2 centerUV = (minBounds + maxBounds) * 0.5;
     if (IsPointVisible(float2(centerUV.x, minBounds.y), (depths[0] + depths[1]) * 0.5) ||
-        IsPointVisible(float2(maxBounds.x, centerUV.y), (depths[1] + depths[2]) * 0.5) ||
+        IsPointVisible(float2(maxBounds.x, centerUV.y), (depths[1] + depths[3]) * 0.5) ||
         IsPointVisible(float2(centerUV.x, maxBounds.y), (depths[2] + depths[3]) * 0.5) ||
-        IsPointVisible(float2(minBounds.x, centerUV.y), (depths[3] + depths[0]) * 0.5))
+        IsPointVisible(float2(minBounds.x, centerUV.y), (depths[0] + depths[2]) * 0.5))
     {
         portal.data.y = PORTAL_STATUS_VISIBLE;
         _PortalDataBuffer[index] = portal;
@@ -184,26 +185,31 @@ void CullPortals(uint3 id : SV_DispatchThreadID)
     }
 
     // -----------------------------------------------------------------------
-    // --- GRID TESTS  ---
+    // --- SAMPLING ---
 
-    uint gridSize = (uint)ceil(sqrt((float)PORTAL_SAMPLES));
-    float2 invGrid = 1.0 / float2(gridSize, gridSize);
+    static const float2 R2_ALPHA = float2(0.7548776662466927, 0.5698402909980532);
+    uint seed = index ^ asuint(_Time.y);
 
-    uint seed = index * 2654435761u + asuint(_Time.y);
+    seed = seed ^ 61u ^ seed >> 16u;
+    seed *= 9u;
+    seed ^= seed >> 4u;
+    seed *= 0x27d4eb2du;
+
+    float2 baseJitter = float2(seed, seed ^ seed >> 11u) * (1.0 / 4294967296.0);
     for (uint idx = 0; idx < PORTAL_SAMPLES; ++idx)
     {
-        uint hash = seed + idx * 2654435761u;
-        float2 jitter = float2(
-            frac(sin(dot(float2(hash, idx), float2(12.9898, 78.233))) * 43758.5453),
-            frac(sin(dot(float2(idx, hash), float2(93.9898, 67.345))) * 43758.5453)
-        );
+        float2 r2 = frac(float2(idx, idx) * R2_ALPHA + baseJitter);
+        float spread = idx / (float)PORTAL_SAMPLES;
 
-        float2 gridPos = saturate(float2(idx % gridSize, idx / gridSize) * invGrid + jitter * invGrid * 0.8);
+        float2 centered = r2 * 2.0 - 1.0;
+        centered = sign(centered) * (1.0 - sqrt(1.0 - abs(centered)));
+        float2 gridPos = lerp(float2(0.5, 0.5), centered * 0.5 + 0.5, spread);
+
         float2 sampleUV = minBounds + gridPos * screenSize;
 
         float sampleDepth = lerp(
             lerp(depths[0], depths[1], gridPos.x),
-            lerp(depths[3], depths[2], gridPos.x),
+            lerp(depths[2], depths[3], gridPos.x),
             gridPos.y
         );
 

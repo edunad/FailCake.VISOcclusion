@@ -1,5 +1,6 @@
 ﻿#region
 
+using System;
 using System.Collections.Generic;
 using UnityEngine;
 using UnityEngine.Rendering;
@@ -10,12 +11,24 @@ using UnityEngine.Rendering.Universal;
 
 namespace FailCake.VIS
 {
+    [Serializable]
+    public enum VISSampleLevels : byte
+    {
+        SAMPLE_8 = 8,
+        SAMPLE_16 = 16,
+        SAMPLE_24 = 24,
+        SAMPLE_32 = 32,
+        SAMPLE_64 = 64,
+        SAMPLE_128 = 128,
+        SAMPLE_255 = 255
+    }
+
     public class VISRendererFeature : ScriptableRendererFeature
     {
         public RenderPassEvent renderPassEvent = RenderPassEvent.AfterRenderingOpaques;
 
-        [Header("Settings"), Range(0, byte.MaxValue)]
-        public byte samples = 32;
+        [Header("Settings")]
+        public VISSampleLevels samples = VISSampleLevels.SAMPLE_32;
 
         [Range(-1, 1)]
         public float padding = -0.02F;
@@ -66,8 +79,8 @@ namespace FailCake.VIS
                 0.0F // TotalPortals
             );
 
-            public VISRenderPass(byte samples, float padding) {
-                this._occlusionParams.x = samples;
+            public VISRenderPass(VISSampleLevels samples, float padding) {
+                this._occlusionParams.x = (byte)samples;
                 this._occlusionParams.z = padding;
 
                 this._computeShader = Resources.Load<ComputeShader>("Shaders/VISOcclusion");
