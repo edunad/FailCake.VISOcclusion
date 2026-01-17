@@ -147,7 +147,7 @@ void CullPortals(uint3 id : SV_DispatchThreadID)
         return;
     }
 
-    // --- QUICK TESTS (2D ONLY, 3D DOES NOT NEED TO BE PRECISE)  ---
+    // --- QUICK TESTS (2D ONLY)  ---
     // -----------------------------------------------------------------------
     float2 padding = PORTAL_PADDING * (maxBounds - minBounds);
     minBounds = saturate(minBounds - padding);
@@ -162,10 +162,11 @@ void CullPortals(uint3 id : SV_DispatchThreadID)
         return;
     }
 
+
     if (IsPointVisible(minBounds, depths[0]) ||
         IsPointVisible(float2(maxBounds.x, minBounds.y), depths[1]) ||
-        IsPointVisible(maxBounds, depths[2]) ||
-        IsPointVisible(float2(minBounds.x, maxBounds.y), depths[3]))
+        IsPointVisible(float2(minBounds.x, maxBounds.y), depths[2]) ||
+        IsPointVisible(maxBounds, depths[3]))
     {
         portal.data.y = PORTAL_STATUS_VISIBLE;
         _PortalDataBuffer[index] = portal;
@@ -174,16 +175,15 @@ void CullPortals(uint3 id : SV_DispatchThreadID)
 
     float2 centerUV = (minBounds + maxBounds) * 0.5;
     if (IsPointVisible(float2(centerUV.x, minBounds.y), (depths[0] + depths[1]) * 0.5) ||
-        IsPointVisible(float2(maxBounds.x, centerUV.y), (depths[1] + depths[2]) * 0.5) ||
+        IsPointVisible(float2(maxBounds.x, centerUV.y), (depths[1] + depths[3]) * 0.5) ||
         IsPointVisible(float2(centerUV.x, maxBounds.y), (depths[2] + depths[3]) * 0.5) ||
-        IsPointVisible(float2(minBounds.x, centerUV.y), (depths[3] + depths[0]) * 0.5))
+        IsPointVisible(float2(minBounds.x, centerUV.y), (depths[0] + depths[2]) * 0.5))
     {
         portal.data.y = PORTAL_STATUS_VISIBLE;
         _PortalDataBuffer[index] = portal;
         return;
     }
 
-    
     // -----------------------------------------------------------------------
     // --- SAMPLING ---
 
@@ -209,7 +209,7 @@ void CullPortals(uint3 id : SV_DispatchThreadID)
 
         float sampleDepth = lerp(
             lerp(depths[0], depths[1], gridPos.x),
-            lerp(depths[3], depths[2], gridPos.x),
+            lerp(depths[2], depths[3], gridPos.x),
             gridPos.y
         );
 
@@ -224,7 +224,7 @@ void CullPortals(uint3 id : SV_DispatchThreadID)
     _PortalDataBuffer[index] = portal;
 }
 
-/*# MIT License Copyright (c) 2025 FailCake
+/*# MIT License Copyright (c) 2026 FailCake
 
 # Permission is hereby granted, free of charge, to any person obtaining a copy of this software and associated documentation files (the
 # "Software"), to deal in the Software without restriction, including without limitation the rights to use, copy, modify, merge, publish,

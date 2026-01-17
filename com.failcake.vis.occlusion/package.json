@@ -1,7 +1,7 @@
-﻿{
+{
   "name": "com.failcake.vis.occlusion",
   "displayName": "VISOcclusion",
-  "version": "0.0.2",
+  "version": "0.0.3",
   "unity": "6000.0",
   "description": "Simple visualization occlusion system. Using portals",
   "type": "library",
@@ -16,6 +16,5 @@
     "name": "FailCake",
     "url": "https://github.com/edunad/FailCake.VISOcclusion"
   },
-  "dependencies": {
-  }
+  "dependencies": {}
 }
