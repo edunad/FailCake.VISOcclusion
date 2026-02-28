@@ -3,6 +3,7 @@
 using System;
 using System.Collections.Generic;
 using System.Runtime.InteropServices;
+using Unity.Collections;
 using Unity.Mathematics;
 using UnityEngine;
 using UnityEngine.Rendering;
@@ -66,6 +67,9 @@ namespace FailCake.VIS
         private readonly Dictionary<Camera, ComputeBuffer> _cameraPortalBuffers = new Dictionary<Camera, ComputeBuffer>();
         private readonly Dictionary<Camera, HashSet<int>> _cameraVisiblePortals = new Dictionary<Camera, HashSet<int>>();
 
+        private PortalComputeDataGPU[] _portalDataCache;
+        private readonly List<entity_vis_room> _currentRoomsCache = new List<entity_vis_room>();
+
         #endregion
 
         public void Awake() {
@@ -89,21 +93,7 @@ namespace FailCake.VIS
             bool isMainCamera = cam == Camera.main;
             bool isAdditionalCamera = this.AdditionalCameras.Contains(cam);
 
-            switch (isMainCamera)
-            {
-                case false when !isAdditionalCamera:
-                    return;
-                case true:
-                {
-                    foreach (entity_vis_portal portal in this._portals)
-                    {
-                        if (!portal) continue;
-                        portal.SetStatus(portal.IsOpen() ? PortalStatus.PENDING : PortalStatus.CLOSED);
-                    }
-
-                    break;
-                }
-            }
+            if (!isMainCamera && !isAdditionalCamera) return;
 
             if (!this._cameraVisiblePortals.TryGetValue(cam, out HashSet<int> visiblePortal))
                 this._cameraVisiblePortals[cam] = new HashSet<int>();
@@ -111,6 +101,20 @@ namespace FailCake.VIS
                 visiblePortal.Clear();
 
             this.UpdateBuffers(cam);
+
+            if (isMainCamera)
+            {
+                float currentTime = Time.time;
+
+                List<entity_vis_room> currentRooms = this.FindCurrentRoom(cam);
+                foreach (entity_vis_room room in currentRooms) this._roomInvisibilityTimers[room] = currentTime + this.OcclusionDelay;
+                foreach (entity_vis_room room in this._rooms)
+                {
+                    if (!room) continue;
+                    float timerValue = this._roomInvisibilityTimers.GetValueOrDefault(room, 0);
+                    room.OnVisibilityChanged?.Invoke(currentTime <= timerValue);
+                }
+            }
         }
 
         private void OnEndCameraRendering(ScriptableRenderContext context, Camera cam) {
@@ -185,6 +189,7 @@ namespace FailCake.VIS
 
         private void ReInitBuffers() {
             this.ReleaseBuffers();
+            this._portalDataCache = null;
         }
 
         private ComputeBuffer GetOrCreateCameraBuffer(Camera cam) {
@@ -204,7 +209,9 @@ namespace FailCake.VIS
             ComputeBuffer cameraBuffer = this.GetOrCreateCameraBuffer(cam);
             if (cameraBuffer == null || !cameraBuffer.IsValid()) return;
 
-            PortalComputeDataGPU[] cameraPortalArray = new PortalComputeDataGPU[this._portals.Count];
+            PortalComputeDataGPU[] cameraPortalArray;
+            if (this._portalDataCache == null || this._portalDataCache.Length != this._portals.Count) this._portalDataCache = new PortalComputeDataGPU[this._portals.Count];
+            cameraPortalArray = this._portalDataCache;
 
             Transform cameraTransform = cam.transform;
             Vector3 cameraPosition = cameraTransform.position;
@@ -265,17 +272,17 @@ namespace FailCake.VIS
         #endregion
 
         private List<entity_vis_room> FindCurrentRoom(Camera cam) {
-            if (!cam) return null;
+            this._currentRoomsCache.Clear();
+            if (!cam) return this._currentRoomsCache;
             Vector3 cameraPosition = cam.transform.position;
 
-            List<entity_vis_room> containingRooms = new List<entity_vis_room>();
             foreach (entity_vis_room room in this._rooms)
             {
                 if (!room) continue;
-                if (room.IsInside?.Invoke(cameraPosition) == true) containingRooms.Add(room);
+                if (room.IsInside?.Invoke(cameraPosition) == true) this._currentRoomsCache.Add(room);
             }
 
-            return containingRooms;
+            return this._currentRoomsCache;
         }
 
         private void OnCullingDataReady(AsyncGPUReadbackRequest request, Camera cam) {
@@ -290,7 +297,7 @@ namespace FailCake.VIS
             // ------------
 
             // Check portals -------
-            PortalComputeDataGPU[] portalDataArray = request.GetData<PortalComputeDataGPU>().ToArray();
+            NativeArray<PortalComputeDataGPU> portalDataArray = request.GetData<PortalComputeDataGPU>();
             if (portalDataArray.Length != this._portals.Count) return;
 
             for (int i = 0; i < this._portals.Count; i++)
@@ -325,16 +332,6 @@ namespace FailCake.VIS
                     }
                 }
             }
-            // ------------------------
-
-            // UPDATE ALL ROOMS  --------------
-            if (isMainCamera)
-                foreach (entity_vis_room room in this._rooms)
-                {
-                    if (!room) continue;
-                    float timerValue = this._roomInvisibilityTimers.GetValueOrDefault(room, 0);
-                    room.OnVisibilityChanged?.Invoke(currentTime <= timerValue);
-                }
             // ------------------------
         }
 
