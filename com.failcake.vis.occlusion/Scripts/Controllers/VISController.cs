@@ -149,7 +149,7 @@ namespace FailCake.VIS
             if (this._rooms.Contains(room)) throw new UnityException("Room already registered!");
 
             this._rooms.Add(room);
-            this._roomInvisibilityTimers[room] = Time.time + this.OcclusionDelay;
+            this._roomInvisibilityTimers[room] = 0;
         }
 
         public void UnregisterRoom(entity_vis_room room) {
