@@ -1,7 +1,7 @@
 <h2>
 	<p align="center">
 		FailCake.VISOcclusion<br/><br/>
-		<img width="256" height="256" src="https://i.rawr.dev/ezgif-734d0bbaa3250a77.gif" />
+		<img width="256" src="https://i.rawr.dev/ezgif-734d0bbaa3250a77.gif" />
 	</p>
 </h2>
 <h4>
@@ -18,7 +18,7 @@
 </h4>
 
 > [!IMPORTANT]
-> Originally built for a game made by a friend [Delivery & Beyond](https://store.steampowered.com/app/3376480/Delivery__Beyond/), not really intended for public use. But after thinking about it, figured I'd share it anyway. Some stuff is still hardcoded for the game, but eventually I want to turn this into a proper plugin.
+> Originally built for [Delivery & Beyond](https://store.steampowered.com/app/3376480/Delivery__Beyond/), not really intended for public use. But after thinking about it, figured I'd share it anyway. Some stuff is still hardcoded for the game, but eventually I want to turn this into a proper plugin.
 
 ## Installation
 <img width="256" height="256" src="https://github.com/user-attachments/assets/5d3fcc53-d3b5-4938-94b6-9974f772c646" />
